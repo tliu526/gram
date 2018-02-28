@@ -455,7 +455,7 @@ def calculate_dimSize(seqFile):
         for visit in patient:
             for code in visit:
                 codeSet.add(code)
-    return max(codeSet) + 1 
+    return max(codeSet) + 1
 
 def get_rootCode(treeFile):
     tree = pickle.load(open(treeFile, 'rb'))
