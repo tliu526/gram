@@ -397,10 +397,8 @@ def train_GRAM(
             batchY = trainSet[1][index*batchSize:(index+1)*batchSize]
             #x, y, mask, lengths = padMatrix(batchX, batchY, options)
             x, y, mask, lengths = buildBatches(batchX, batchY, options)
-            print x.shape
-            #print x
-            print y.shape
-            #print y
+            # print x.shape
+            # print y.shape
             costValue = f_grad_shared(x, y, mask, lengths)
             f_update()
             costVec.append(costValue)
@@ -467,7 +465,7 @@ if __name__ == '__main__':
     args = parse_arguments(parser)
 
     inputDimSize = calculate_dimSize(args.seq_file)
-    numClass = calculate_dimSize(args.label_file)
+    #numClass = calculate_dimSize(args.label_file)
     numAncestors = get_rootCode(args.tree_file+'.level2.pk') - inputDimSize + 1
 
     train_GRAM(
@@ -476,7 +474,7 @@ if __name__ == '__main__':
         treeFile=args.tree_file,
         numAncestors=numAncestors,
         labelFile=args.label_file,
-        numClass=numClass,
+        numClass=None,
         outFile=args.out_file,
         embFile=args.embed_file,
         embDimSize=args.embed_size,
