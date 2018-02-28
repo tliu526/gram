@@ -122,7 +122,8 @@ def build_model(tparams, leavesList, ancestorsList, options):
     use_noise = theano.shared(numpy_floatX(0.))
 
     x = T.tensor3('x', dtype=config.floatX)
-    y = T.tensor3('y', dtype=config.floatX)
+    y = T.matrix('y', dtype=config.floatX)
+    #y = T.tensor3('y', dtype=config.floatX)
     mask = T.matrix('mask', dtype=config.floatX)
     lengths = T.vector('lengths', dtype=config.floatX)
 
@@ -141,6 +142,7 @@ def build_model(tparams, leavesList, ancestorsList, options):
     hidden = gru_layer(tparams, x_emb, options)
     # we only want the last h vector for HF prediction
     hidden = dropout_layer(hidden, use_noise, trng, dropoutRate)[-1]
+    print hidden.shape
     y_hat = sigmoid_layer(tparams, hidden) # TODO verify mask is unneeded
     #y_hat = softmax_layer(tparams, hidden) * mask[:,:,None]
 
@@ -152,7 +154,8 @@ def build_model(tparams, leavesList, ancestorsList, options):
     # axis 0 is the (padded max) length of the patient contexts,
     # in the HF case only one prediction is created so should be 1.
     # Thus shouldn't need to divide by lengths, which is the vector of lengths of pat contexts
-    output_loglikelihood = cross_entropy.sum(axis=2).sum(axis=0) # / lengths
+    output_loglikelihood = cross_entropy # .sum(axis=2).sum(axis=0)  / lengths
+    print output_loglikelihood.shape
     #output_loglikelihood = T.reshape(cross_entropy, ndim=1)
     cost_noreg = T.mean(output_loglikelihood)
 
@@ -239,17 +242,24 @@ def adadelta(tparams, grads, x, y, mask, lengths, cost):
     return f_grad_shared, f_update
 
 def padMatrix(seqs, labels, options):
-    lengths = np.array([len(seq) for seq in seqs]) - 1
+    # lengths is the number of visits in a patient's context
+    lengths = np.array([len(seq) for seq in seqs])  - 1
     n_samples = len(seqs)
     maxlen = np.max(lengths)
+    #print "n_samples: {}".format(n_samples)
+    #print "maxlen: {}".format(maxlen)
 
-    # first dimension is patient context length, second dimension is number of patients in batch, third is embed dim
-    x = np.zeros((maxlen, n_samples, options['inputDimSize'])).astype(config.floatX)
-    y = np.zeros((1, n_samples, 1)).astype(config.floatX)
-    #y = np.zeros((maxlen, n_samples, options['numClass'])).astype(config.floatX)
+
+    x = np.zeros((n_samples, options['inputDimSize'])).astype(config.floatX)
+    y = np.zeros((n_samples, 1)).astype(config.floatX)
+    # first dimension is max patient context length, second dimension is batch size, third is vocab_size
+    # x = np.zeros((maxlen, n_samples, options['inputDimSize'])).astype(config.floatX)
+    # y = np.zeros((maxlen, n_samples, options['numClass'])).astype(config.floatX)
     mask = np.zeros((maxlen, n_samples)).astype(config.floatX)
 
     for idx, (seq, lseq) in enumerate(zip(seqs,labels)):
+        # This is where the "next visit" is taken care of internally:
+        # first entry in seq is lined up with second entry in label
         for xvec, subseq in zip(x[:,idx,:], seq[:-1]):
             xvec[subseq] = 1.
         for yvec, subseq in zip(y[:,idx,:], lseq[1:]):
@@ -261,7 +271,34 @@ def padMatrix(seqs, labels, options):
 
     return x, y, mask, lengths
 
-def calculate_cost(test_model, dataset, options, test_probs):
+def buildBatches(seqs, labels, options):
+    """
+    Builds batches for x and y in the HF case.
+    :param seqs: 
+    :param labels: 
+    :param options: 
+    :return: 
+    """
+    lengths = np.array([len(seq) for seq in seqs]) # - 1 we're considering all visits in this case
+    n_samples = len(seqs)
+    maxlen = np.max(lengths)
+
+    x = np.zeros((maxlen, n_samples, options['inputDimSize'])).astype(config.floatX)
+    y = np.zeros((n_samples, 1)).astype(config.floatX)
+    mask = np.zeros((maxlen, n_samples)).astype(config.floatX)
+
+    for idx, seq in enumerate(seqs):
+        for xvec, subseq in zip(x[:,idx,:], seq):
+            xvec[subseq] = 1.
+
+        mask[:lengths[idx], idx] = 1
+
+    for idx, label in enumerate(labels):
+        y[idx] = label
+
+    return x, y, mask, lengths
+
+def calculate_cost(test_model, dataset, options, test_probs=None):
     batchSize = options['batchSize']
     n_batches = int(np.ceil(float(len(dataset[0])) / float(batchSize)))
     costSum = 0.0
@@ -270,12 +307,14 @@ def calculate_cost(test_model, dataset, options, test_probs):
     for index in xrange(n_batches):
         batchX = dataset[0][index*batchSize:(index+1)*batchSize]
         batchY = dataset[1][index*batchSize:(index+1)*batchSize]
-        x, y, mask, lengths = padMatrix(batchX, batchY, options)
+        #x, y, mask, lengths = padMatrix(batchX, batchY, options)
+        x, y, mask, lengths = buildBatches(batchX, batchY, options)
         cost = test_model(x, y, mask, lengths)
         costSum += cost * len(batchX)
         dataCount += len(batchX)
-        batch_probs = test_probs(x, y, mask, lengths)
-        out_probs.extend(batch_probs)
+        if test_probs is not None:
+            batch_probs = test_probs(x, y, mask, lengths)
+            out_probs.extend(batch_probs)
     return costSum / dataCount, out_probs
 
 def print2file(buf, outFile):
@@ -356,7 +395,12 @@ def train_GRAM(
             use_noise.set_value(1.)
             batchX = trainSet[0][index*batchSize:(index+1)*batchSize]
             batchY = trainSet[1][index*batchSize:(index+1)*batchSize]
-            x, y, mask, lengths = padMatrix(batchX, batchY, options)
+            #x, y, mask, lengths = padMatrix(batchX, batchY, options)
+            x, y, mask, lengths = buildBatches(batchX, batchY, options)
+            print x.shape
+            #print x
+            print y.shape
+            #print y
             costValue = f_grad_shared(x, y, mask, lengths)
             f_update()
             costVec.append(costValue)
@@ -369,7 +413,7 @@ def train_GRAM(
         use_noise.set_value(0.)
         trainCost = np.mean(costVec)
         validCost, _ = calculate_cost(get_cost, validSet, options)
-        testCost, predLabels = calculate_cost(get_cost, testSet, options)
+        testCost, predLabels = calculate_cost(get_cost, testSet, options, get_probs)
         buf = 'Epoch:%d, Duration:%f, Train_Cost:%f, Valid_Cost:%f, Test_Cost:%f' % (epoch, duration, trainCost, validCost, testCost)
         print buf
         print2file(buf, logFile)
@@ -411,7 +455,7 @@ def calculate_dimSize(seqFile):
         for visit in patient:
             for code in visit:
                 codeSet.add(code)
-    return max(codeSet) + 1
+    return max(codeSet) + 1 
 
 def get_rootCode(treeFile):
     tree = pickle.load(open(treeFile, 'rb'))
